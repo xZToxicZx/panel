@@ -3,11 +3,12 @@
 namespace Pterodactyl\Http\Middleware\Api;
 
 use Closure;
-use Cake\Chronos\Chronos;
+use Carbon\CarbonImmutable;
 use Illuminate\Http\Request;
 use Pterodactyl\Models\User;
 use Pterodactyl\Models\ApiKey;
 use Illuminate\Auth\AuthManager;
+use Illuminate\Support\Facades\Session;
 use Illuminate\Contracts\Encryption\Encrypter;
 use Symfony\Component\HttpKernel\Exception\HttpException;
 use Pterodactyl\Exceptions\Repository\RecordNotFoundException;
@@ -33,10 +34,6 @@ class AuthenticateKey
 
     /**
      * AuthenticateKey constructor.
-     *
-     * @param \Pterodactyl\Contracts\Repository\ApiKeyRepositoryInterface $repository
-     * @param \Illuminate\Auth\AuthManager $auth
-     * @param \Illuminate\Contracts\Encryption\Encrypter $encrypter
      */
     public function __construct(ApiKeyRepositoryInterface $repository, AuthManager $auth, Encrypter $encrypter)
     {
@@ -46,12 +43,11 @@ class AuthenticateKey
     }
 
     /**
-     * Handle an API request by verifying that the provided API key
-     * is in a valid format and exists in the database.
+     * Handle an API request by verifying that the provided API key is in a valid
+     * format and exists in the database. If there is currently a user in the session
+     * do not even bother to look at the token (they provided a cookie for this to
+     * be the case).
      *
-     * @param \Illuminate\Http\Request $request
-     * @param \Closure $next
-     * @param int $keyType
      * @return mixed
      *
      * @throws \Pterodactyl\Exceptions\Model\DataValidationException
@@ -60,20 +56,20 @@ class AuthenticateKey
     public function handle(Request $request, Closure $next, int $keyType)
     {
         if (is_null($request->bearerToken()) && is_null($request->user())) {
-            throw new HttpException(401, null, null, ['WWW-Authenticate' => 'Bearer']);
+            throw new HttpException(401, 'A bearer token or valid user session cookie must be provided to access this endpoint.', null, ['WWW-Authenticate' => 'Bearer']);
         }
 
-        $raw = $request->bearerToken();
-
-        // This is a request coming through using cookies, we have an authenticated user not using
-        // an API key. Make some fake API key models and continue on through the process.
-        if (empty($raw) && $request->user() instanceof User) {
+        // This is a request coming through using cookies, we have an authenticated user
+        // not using an API key. Make some fake API key models and continue on through
+        // the process.
+        if ($request->user() instanceof User) {
             $model = (new ApiKey())->forceFill([
                 'user_id' => $request->user()->id,
                 'key_type' => ApiKey::TYPE_ACCOUNT,
             ]);
         } else {
-            $model = $this->authenticateApiKey($raw, $keyType);
+            $model = $this->authenticateApiKey($request->bearerToken(), $keyType);
+
             $this->auth->guard()->loginUsingId($model->user_id);
         }
 
@@ -84,10 +80,6 @@ class AuthenticateKey
 
     /**
      * Authenticate an API key.
-     *
-     * @param string $key
-     * @param int $keyType
-     * @return \Pterodactyl\Models\ApiKey
      *
      * @throws \Pterodactyl\Exceptions\Model\DataValidationException
      * @throws \Pterodactyl\Exceptions\Repository\RecordNotFoundException
@@ -103,14 +95,14 @@ class AuthenticateKey
                 ['key_type', '=', $keyType],
             ]);
         } catch (RecordNotFoundException $exception) {
-            throw new AccessDeniedHttpException;
+            throw new AccessDeniedHttpException();
         }
 
-        if (! hash_equals($this->encrypter->decrypt($model->token), $token)) {
-            throw new AccessDeniedHttpException;
+        if (!hash_equals($this->encrypter->decrypt($model->token), $token)) {
+            throw new AccessDeniedHttpException();
         }
 
-        $this->repository->withoutFreshModel()->update($model->id, ['last_used_at' => Chronos::now()]);
+        $this->repository->withoutFreshModel()->update($model->id, ['last_used_at' => CarbonImmutable::now()]);
 
         return $model;
     }

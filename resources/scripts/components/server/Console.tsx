@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ITerminalOptions, Terminal } from 'xterm';
+import { Terminal, ITerminalOptions } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
 import { SearchAddon } from 'xterm-addon-search';
 import { SearchBarAddon } from 'xterm-addon-search-bar';
 import { WebLinksAddon } from 'xterm-addon-web-links';
+import { ScrollDownHelperAddon } from '@/plugins/XtermScrollDownHelperAddon';
 import SpinnerOverlay from '@/components/elements/SpinnerOverlay';
 import { ServerContext } from '@/state/server';
 import styled from 'styled-components/macro';
@@ -13,6 +14,7 @@ import 'xterm/css/xterm.css';
 import useEventListener from '@/plugins/useEventListener';
 import { debounce } from 'debounce';
 import { usePersistedState } from '@/plugins/usePersistedState';
+import { SocketEvent, SocketRequest } from '@/components/server/events';
 
 const theme = {
     background: th`colors.black`.toString(),
@@ -71,6 +73,7 @@ export default () => {
     const searchAddon = new SearchAddon();
     const searchBar = new SearchBarAddon({ searchAddon });
     const webLinksAddon = new WebLinksAddon();
+    const scrollDownHelperAddon = new ScrollDownHelperAddon();
     const { connected, instance } = ServerContext.useStoreState(state => state.socket);
     const [ canSendCommands ] = usePermissions([ 'control.console' ]);
     const serverId = ServerContext.useStoreState(state => state.server.data!.id);
@@ -134,100 +137,95 @@ export default () => {
 
     useEffect(() => {
         if (connected && ref.current && !terminal.element) {
-            terminal.open(ref.current);
             terminal.loadAddon(fitAddon);
             terminal.loadAddon(searchAddon);
             terminal.loadAddon(searchBar);
             terminal.loadAddon(webLinksAddon);
+            terminal.loadAddon(scrollDownHelperAddon);
+
+            terminal.open(ref.current);
             fitAddon.fit();
 
             // Add support for capturing keys
             terminal.attachCustomKeyEventHandler((e: KeyboardEvent) => {
-                // Ctrl + C (Copy)
-                if (e.ctrlKey && e.key === 'c') {
+                if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
                     document.execCommand('copy');
                     return false;
-                }
-
-                // Ctrl + F (Find)
-                if (e.ctrlKey && e.key === 'f') {
+                } else if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+                    e.preventDefault();
                     searchBar.show();
                     return false;
-                }
-
-                // Escape
-                if (e.key === 'Escape') {
+                } else if (e.key === 'Escape') {
                     searchBar.hidden();
                 }
-
                 return true;
             });
         }
     }, [ terminal, connected ]);
 
-    const fit = debounce(() => {
-        fitAddon.fit();
-    }, 100);
-
-    useEventListener('resize', () => fit());
+    useEventListener('resize', debounce(() => {
+        if (terminal.element) {
+            fitAddon.fit();
+        }
+    }, 100));
 
     useEffect(() => {
+        const listeners: Record<string, (s: string) => void> = {
+            [SocketEvent.STATUS]: handlePowerChangeEvent,
+            [SocketEvent.CONSOLE_OUTPUT]: handleConsoleOutput,
+            [SocketEvent.INSTALL_OUTPUT]: handleConsoleOutput,
+            [SocketEvent.TRANSFER_LOGS]: handleConsoleOutput,
+            [SocketEvent.TRANSFER_STATUS]: handleTransferStatus,
+            [SocketEvent.DAEMON_MESSAGE]: line => handleConsoleOutput(line, true),
+            [SocketEvent.DAEMON_ERROR]: handleDaemonErrorOutput,
+        };
+
         if (connected && instance) {
             // Do not clear the console if the server is being transferred.
             if (!isTransferring) {
                 terminal.clear();
             }
 
-            instance.addListener('status', handlePowerChangeEvent);
-            instance.addListener('console output', handleConsoleOutput);
-            instance.addListener('install output', handleConsoleOutput);
-            instance.addListener('transfer logs', handleConsoleOutput);
-            instance.addListener('transfer status', handleTransferStatus);
-            instance.addListener('daemon message', line => handleConsoleOutput(line, true));
-            instance.addListener('daemon error', handleDaemonErrorOutput);
-            instance.send('send logs');
+            Object.keys(listeners).forEach((key: string) => {
+                instance.addListener(key, listeners[key]);
+            });
+            instance.send(SocketRequest.SEND_LOGS);
         }
 
         return () => {
-            instance && instance.removeListener('status', handlePowerChangeEvent)
-                .removeListener('console output', handleConsoleOutput)
-                .removeListener('install output', handleConsoleOutput)
-                .removeListener('transfer logs', handleConsoleOutput)
-                .removeListener('transfer status', handleTransferStatus)
-                .removeListener('daemon message', line => handleConsoleOutput(line, true))
-                .removeListener('daemon error', handleDaemonErrorOutput);
+            if (instance) {
+                Object.keys(listeners).forEach((key: string) => {
+                    instance.removeListener(key, listeners[key]);
+                });
+            }
         };
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [ connected, instance ]);
 
     return (
         <div css={tw`text-xs font-mono relative`}>
-            <SpinnerOverlay visible={!connected} size={'large'}/>
+            <SpinnerOverlay visible={!connected} size={'large'} />
             <div
                 css={[
                     tw`rounded-t p-2 bg-black w-full`,
                     !canSendCommands && tw`rounded-b`,
                 ]}
-                style={{
-                    minHeight: '16rem',
-                    maxHeight: '32rem',
-                }}
+                style={{ minHeight: '16rem' }}
             >
-                <TerminalDiv id={'terminal'} ref={ref}/>
+                <TerminalDiv id={'terminal'} ref={ref} />
             </div>
             {canSendCommands &&
-            <div css={tw`rounded-b bg-neutral-900 text-neutral-100 flex items-baseline`}>
-                <div css={tw`flex-shrink-0 p-2 font-bold`}>$</div>
-                <div css={tw`w-full`}>
-                    <CommandInput
-                        type={'text'}
-                        placeholder={'Type a command...'}
-                        aria-label={'Console command input.'}
-                        disabled={!instance || !connected}
-                        onKeyDown={handleCommandKeyDown}
-                    />
+                <div css={tw`rounded-b bg-neutral-900 text-neutral-100 flex items-baseline`}>
+                    <div css={tw`flex-shrink-0 p-2 font-bold`}>$</div>
+                    <div css={tw`w-full`}>
+                        <CommandInput
+                            type={'text'}
+                            placeholder={'Type a command...'}
+                            aria-label={'Console command input.'}
+                            disabled={!instance || !connected}
+                            onKeyDown={handleCommandKeyDown}
+                        />
+                    </div>
                 </div>
-            </div>
             }
         </div>
     );

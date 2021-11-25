@@ -9,7 +9,7 @@ import FileNameModal from '@/components/server/files/FileNameModal';
 import Can from '@/components/elements/Can';
 import FlashMessageRender from '@/components/FlashMessageRender';
 import PageContentBlock from '@/components/elements/PageContentBlock';
-import ServerError from '@/components/screens/ServerError';
+import { ServerError } from '@/components/elements/ScreenBlock';
 import tw from 'twin.macro';
 import Button from '@/components/elements/Button';
 import Select from '@/components/elements/Select';
@@ -24,7 +24,7 @@ const LazyCodemirrorEditor = lazy(() => import(/* webpackChunkName: "editor" */'
 
 export default () => {
     const [ error, setError ] = useState('');
-    const { action } = useParams();
+    const { action } = useParams<{ action: 'new' | string }>();
     const [ loading, setLoading ] = useState(action === 'edit');
     const [ content, setContent ] = useState('');
     const [ modalVisible, setModalVisible ] = useState(false);

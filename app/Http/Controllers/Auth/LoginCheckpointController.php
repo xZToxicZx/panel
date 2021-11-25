@@ -2,73 +2,36 @@
 
 namespace Pterodactyl\Http\Controllers\Auth;
 
+use Carbon\CarbonInterface;
+use Carbon\CarbonImmutable;
 use Pterodactyl\Models\User;
-use Illuminate\Auth\AuthManager;
 use Illuminate\Http\JsonResponse;
 use PragmaRX\Google2FA\Google2FA;
-use Illuminate\Contracts\Config\Repository;
 use Illuminate\Contracts\Encryption\Encrypter;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Pterodactyl\Http\Requests\Auth\LoginCheckpointRequest;
-use Illuminate\Contracts\Cache\Repository as CacheRepository;
-use Pterodactyl\Contracts\Repository\UserRepositoryInterface;
-use Pterodactyl\Exceptions\Repository\RecordNotFoundException;
-use Pterodactyl\Repositories\Eloquent\RecoveryTokenRepository;
+use Illuminate\Contracts\Validation\Factory as ValidationFactory;
 
 class LoginCheckpointController extends AbstractLoginController
 {
-    /**
-     * @var \Illuminate\Contracts\Cache\Repository
-     */
-    private $cache;
+    private const TOKEN_EXPIRED_MESSAGE = 'The authentication token provided has expired, please refresh the page and try again.';
 
-    /**
-     * @var \Pterodactyl\Contracts\Repository\UserRepositoryInterface
-     */
-    private $repository;
+    private ValidationFactory $validation;
 
-    /**
-     * @var \PragmaRX\Google2FA\Google2FA
-     */
-    private $google2FA;
+    private Google2FA $google2FA;
 
-    /**
-     * @var \Illuminate\Contracts\Encryption\Encrypter
-     */
-    private $encrypter;
-
-    /**
-     * @var \Pterodactyl\Repositories\Eloquent\RecoveryTokenRepository
-     */
-    private $recoveryTokenRepository;
+    private Encrypter $encrypter;
 
     /**
      * LoginCheckpointController constructor.
-     *
-     * @param \Illuminate\Auth\AuthManager $auth
-     * @param \Illuminate\Contracts\Encryption\Encrypter $encrypter
-     * @param \PragmaRX\Google2FA\Google2FA $google2FA
-     * @param \Illuminate\Contracts\Config\Repository $config
-     * @param \Illuminate\Contracts\Cache\Repository $cache
-     * @param \Pterodactyl\Repositories\Eloquent\RecoveryTokenRepository $recoveryTokenRepository
-     * @param \Pterodactyl\Contracts\Repository\UserRepositoryInterface $repository
      */
-    public function __construct(
-        AuthManager $auth,
-        Encrypter $encrypter,
-        Google2FA $google2FA,
-        Repository $config,
-        CacheRepository $cache,
-        RecoveryTokenRepository $recoveryTokenRepository,
-        UserRepositoryInterface $repository
-    ) {
-        parent::__construct($auth, $config);
+    public function __construct(Encrypter $encrypter, Google2FA $google2FA, ValidationFactory $validation)
+    {
+        parent::__construct();
 
         $this->google2FA = $google2FA;
-        $this->cache = $cache;
-        $this->repository = $repository;
         $this->encrypter = $encrypter;
-        $this->recoveryTokenRepository = $recoveryTokenRepository;
+        $this->validation = $validation;
     }
 
     /**
@@ -76,7 +39,6 @@ class LoginCheckpointController extends AbstractLoginController
      * token. Once a user has reached this stage it is assumed that they have already
      * provided a valid username and password.
      *
-     * @param \Pterodactyl\Http\Requests\Auth\LoginCheckpointRequest $request
      * @return \Illuminate\Http\JsonResponse|void
      *
      * @throws \PragmaRX\Google2FA\Exceptions\IncompatibleWithGoogleAuthenticatorException
@@ -91,20 +53,24 @@ class LoginCheckpointController extends AbstractLoginController
             $this->sendLockoutResponse($request);
         }
 
-        $token = $request->input('confirmation_token');
+        $details = $request->session()->get('auth_confirmation_token');
+        if (!$this->hasValidSessionData($details)) {
+            $this->sendFailedLoginResponse($request, null, self::TOKEN_EXPIRED_MESSAGE);
+        }
+
+        if (!hash_equals($request->input('confirmation_token') ?? '', $details['token_value'])) {
+            $this->sendFailedLoginResponse($request);
+        }
+
         try {
             /** @var \Pterodactyl\Models\User $user */
-            $user = User::query()->findOrFail($this->cache->get($token, 0));
+            $user = User::query()->findOrFail($details['user_id']);
         } catch (ModelNotFoundException $exception) {
-            $this->incrementLoginAttempts($request);
-
-            return $this->sendFailedLoginResponse(
-                $request, null, 'The authentication token provided has expired, please refresh the page and try again.'
-            );
+            $this->sendFailedLoginResponse($request, null, self::TOKEN_EXPIRED_MESSAGE);
         }
 
         // Recovery tokens go through a slightly different pathway for usage.
-        if (! is_null($recoveryToken = $request->input('recovery_token'))) {
+        if (!is_null($recoveryToken = $request->input('recovery_token'))) {
             if ($this->isValidRecoveryToken($user, $recoveryToken)) {
                 return $this->sendLoginResponse($user, $request);
             }
@@ -112,23 +78,17 @@ class LoginCheckpointController extends AbstractLoginController
             $decrypted = $this->encrypter->decrypt($user->totp_secret);
 
             if ($this->google2FA->verifyKey($decrypted, (string) $request->input('authentication_code') ?? '', config('pterodactyl.auth.2fa.window'))) {
-                $this->cache->delete($token);
-
                 return $this->sendLoginResponse($user, $request);
             }
         }
 
-        $this->incrementLoginAttempts($request);
-
-        return $this->sendFailedLoginResponse($request, $user, ! empty($recoveryToken) ? 'The recovery token provided is not valid.' : null);
+        $this->sendFailedLoginResponse($request, $user, !empty($recoveryToken) ? 'The recovery token provided is not valid.' : null);
     }
 
     /**
      * Determines if a given recovery token is valid for the user account. If we find a matching token
      * it will be deleted from the database.
      *
-     * @param \Pterodactyl\Models\User $user
-     * @param string $value
      * @return bool
      *
      * @throws \Exception
@@ -144,5 +104,36 @@ class LoginCheckpointController extends AbstractLoginController
         }
 
         return false;
+    }
+
+    /**
+     * Determines if the data provided from the session is valid or not. This
+     * will return false if the data is invalid, or if more time has passed than
+     * was configured when the session was written.
+     *
+     * @param array $data
+     * @return bool
+     */
+    protected function hasValidSessionData(array $data): bool
+    {
+        $validator = $this->validation->make($data, [
+            'user_id' => 'required|integer|min:1',
+            'token_value' => 'required|string',
+            'expires_at' => 'required',
+        ]);
+
+        if ($validator->fails()) {
+            return false;
+        }
+
+        if (!$data['expires_at'] instanceof CarbonInterface) {
+            return false;
+        }
+
+        if ($data['expires_at']->isBefore(CarbonImmutable::now())) {
+            return false;
+        }
+
+        return true;
     }
 }

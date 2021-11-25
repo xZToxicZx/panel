@@ -7,7 +7,7 @@ use Pterodactyl\Models\User;
 use Illuminate\Auth\AuthManager;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Auth\Events\Failed;
-use Illuminate\Contracts\Config\Repository;
+use Illuminate\Container\Container;
 use Pterodactyl\Exceptions\DisplayException;
 use Pterodactyl\Http\Controllers\Controller;
 use Illuminate\Contracts\Auth\Authenticatable;
@@ -16,6 +16,8 @@ use Illuminate\Foundation\Auth\AuthenticatesUsers;
 abstract class AbstractLoginController extends Controller
 {
     use AuthenticatesUsers;
+
+    protected AuthManager $auth;
 
     /**
      * Lockout time for failed login requests.
@@ -39,36 +41,17 @@ abstract class AbstractLoginController extends Controller
     protected $redirectTo = '/';
 
     /**
-     * @var \Illuminate\Auth\AuthManager
-     */
-    protected $auth;
-
-    /**
-     * @var \Illuminate\Contracts\Config\Repository
-     */
-    protected $config;
-
-    /**
      * LoginController constructor.
-     *
-     * @param \Illuminate\Auth\AuthManager $auth
-     * @param \Illuminate\Contracts\Config\Repository $config
      */
-    public function __construct(AuthManager $auth, Repository $config)
+    public function __construct()
     {
-        $this->lockoutTime = $config->get('auth.lockout.time');
-        $this->maxLoginAttempts = $config->get('auth.lockout.attempts');
-
-        $this->auth = $auth;
-        $this->config = $config;
+        $this->lockoutTime = config('auth.lockout.time');
+        $this->maxLoginAttempts = config('auth.lockout.attempts');
+        $this->auth = Container::getInstance()->make(AuthManager::class);
     }
 
     /**
      * Get the failed login response instance.
-     *
-     * @param \Illuminate\Http\Request $request
-     * @param \Illuminate\Contracts\Auth\Authenticatable|null $user
-     * @param string|null $message
      *
      * @throws \Pterodactyl\Exceptions\DisplayException
      */
@@ -80,9 +63,7 @@ abstract class AbstractLoginController extends Controller
         ]);
 
         if ($request->route()->named('auth.login-checkpoint')) {
-            throw new DisplayException(
-                $message ?? trans('auth.two_factor.checkpoint_failed')
-            );
+            throw new DisplayException($message ?? trans('auth.two_factor.checkpoint_failed'));
         }
 
         throw new DisplayException(trans('auth.failed'));
@@ -90,19 +71,17 @@ abstract class AbstractLoginController extends Controller
 
     /**
      * Send the response after the user was authenticated.
-     *
-     * @param \Pterodactyl\Models\User $user
-     * @param \Illuminate\Http\Request $request
-     * @return \Illuminate\Http\JsonResponse
      */
     protected function sendLoginResponse(User $user, Request $request): JsonResponse
     {
+        $request->session()->remove('auth_confirmation_token');
         $request->session()->regenerate();
+
         $this->clearLoginAttempts($request);
 
         $this->auth->guard()->login($user, true);
 
-        return JsonResponse::create([
+        return new JsonResponse([
             'data' => [
                 'complete' => true,
                 'intended' => $this->redirectPath(),
@@ -114,7 +93,7 @@ abstract class AbstractLoginController extends Controller
     /**
      * Determine if the user is logging in using an email or username,.
      *
-     * @param string $input
+     * @param string|null $input
      * @return string
      */
     protected function getField(string $input = null): string
@@ -124,9 +103,6 @@ abstract class AbstractLoginController extends Controller
 
     /**
      * Fire a failed login event.
-     *
-     * @param \Illuminate\Contracts\Auth\Authenticatable|null $user
-     * @param array $credentials
      */
     protected function fireFailedLoginEvent(Authenticatable $user = null, array $credentials = [])
     {

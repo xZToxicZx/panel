@@ -7,8 +7,6 @@ use Pterodactyl\Jobs\Job;
 use Carbon\CarbonImmutable;
 use Pterodactyl\Models\Task;
 use InvalidArgumentException;
-use Pterodactyl\Models\Schedule;
-use Illuminate\Support\Facades\Log;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -16,10 +14,13 @@ use Illuminate\Foundation\Bus\DispatchesJobs;
 use Pterodactyl\Services\Backups\InitiateBackupService;
 use Pterodactyl\Repositories\Wings\DaemonPowerRepository;
 use Pterodactyl\Repositories\Wings\DaemonCommandRepository;
+use Pterodactyl\Exceptions\Http\Connection\DaemonConnectionException;
 
 class RunTaskJob extends Job implements ShouldQueue
 {
-    use DispatchesJobs, InteractsWithQueue, SerializesModels;
+    use DispatchesJobs;
+    use InteractsWithQueue;
+    use SerializesModels;
 
     /**
      * @var \Pterodactyl\Models\Task
@@ -27,22 +28,22 @@ class RunTaskJob extends Job implements ShouldQueue
     public $task;
 
     /**
-     * RunTaskJob constructor.
-     *
-     * @param \Pterodactyl\Models\Task $task
+     * @var bool
      */
-    public function __construct(Task $task)
+    public $manualRun;
+
+    /**
+     * RunTaskJob constructor.
+     */
+    public function __construct(Task $task, $manualRun = false)
     {
         $this->queue = config('pterodactyl.queues.standard');
         $this->task = $task;
+        $this->manualRun = $manualRun;
     }
 
     /**
      * Run the job and send actions to the daemon running the server.
-     *
-     * @param \Pterodactyl\Repositories\Wings\DaemonCommandRepository $commandRepository
-     * @param \Pterodactyl\Services\Backups\InitiateBackupService $backupService
-     * @param \Pterodactyl\Repositories\Wings\DaemonPowerRepository $powerRepository
      *
      * @throws \Throwable
      */
@@ -51,8 +52,8 @@ class RunTaskJob extends Job implements ShouldQueue
         InitiateBackupService $backupService,
         DaemonPowerRepository $powerRepository
     ) {
-        // Do not process a task that is not set to active.
-        if (! $this->task->schedule->is_active) {
+        // Do not process a task that is not set to active, unless it's been manually triggered.
+        if (!$this->task->schedule->is_active && !$this->manualRun) {
             $this->markTaskNotQueued();
             $this->markScheduleComplete();
 
@@ -61,18 +62,26 @@ class RunTaskJob extends Job implements ShouldQueue
 
         $server = $this->task->server;
         // Perform the provided task against the daemon.
-        switch ($this->task->action) {
-            case 'power':
-                $powerRepository->setServer($server)->send($this->task->payload);
-                break;
-            case 'command':
-                $commandRepository->setServer($server)->send($this->task->payload);
-                break;
-            case 'backup':
-                $backupService->setIgnoredFiles(explode(PHP_EOL, $this->task->payload))->handle($server, null, true);
-                break;
-            default:
-                throw new InvalidArgumentException('Cannot run a task that points to a non-existent action.');
+        try {
+            switch ($this->task->action) {
+                case Task::ACTION_POWER:
+                    $powerRepository->setServer($server)->send($this->task->payload);
+                    break;
+                case Task::ACTION_COMMAND:
+                    $commandRepository->setServer($server)->send($this->task->payload);
+                    break;
+                case Task::ACTION_BACKUP:
+                    $backupService->setIgnoredFiles(explode(PHP_EOL, $this->task->payload))->handle($server, null, true);
+                    break;
+                default:
+                    throw new InvalidArgumentException('Invalid task action provided: ' . $this->task->action);
+            }
+        } catch (Exception $exception) {
+            // If this isn't a DaemonConnectionException on a task that allows for failures
+            // throw the exception back up the chain so that the task is stopped.
+            if (!($this->task->continue_on_failure && $exception instanceof DaemonConnectionException)) {
+                throw $exception;
+            }
         }
 
         $this->markTaskNotQueued();
@@ -81,8 +90,6 @@ class RunTaskJob extends Job implements ShouldQueue
 
     /**
      * Handle a failure while sending the action to the daemon or otherwise processing the job.
-     *
-     * @param \Exception|null $exception
      */
     public function failed(Exception $exception = null)
     {
@@ -108,7 +115,7 @@ class RunTaskJob extends Job implements ShouldQueue
 
         $nextTask->update(['is_queued' => true]);
 
-        $this->dispatch((new self($nextTask))->delay($nextTask->time_offset));
+        $this->dispatch((new self($nextTask, $this->manualRun))->delay($nextTask->time_offset));
     }
 
     /**

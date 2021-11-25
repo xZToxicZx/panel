@@ -32,6 +32,7 @@ export const rawDataToFileObject = (data: FractalResponseData): FileObject => ({
             'application/x-br', // .tar.br
             'application/x-bzip2', // .tar.bz2, .bz2
             'application/gzip', // .tar.gz, .gz
+            'application/x-gzip',
             'application/x-lzip', // .tar.lz4, .lz4 (not sure if this mime type is correct)
             'application/x-sz', // .tar.sz, .sz (not sure if this mime type is correct)
             'application/x-xz', // .tar.xz, .xz
@@ -57,6 +58,7 @@ export const rawDataToFileObject = (data: FractalResponseData): FileObject => ({
 export const rawDataToServerBackup = ({ attributes }: FractalResponseData): ServerBackup => ({
     uuid: attributes.uuid,
     isSuccessful: attributes.is_successful,
+    isLocked: attributes.is_locked,
     name: attributes.name,
     ignoredFiles: attributes.ignored_files,
     checksum: attributes.checksum,

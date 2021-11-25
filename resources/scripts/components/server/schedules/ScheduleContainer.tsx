@@ -58,7 +58,7 @@ export default () => {
                                     css={tw`cursor-pointer mb-2 flex-wrap`}
                                     onClick={(e: any) => {
                                         e.preventDefault();
-                                        history.push(`${match.url}/${schedule.id}`, { schedule });
+                                        history.push(`${match.url}/${schedule.id}`);
                                     }}
                                 >
                                     <ScheduleRow schedule={schedule}/>
@@ -67,7 +67,7 @@ export default () => {
                     }
                     <Can action={'schedule.create'}>
                         <div css={tw`mt-8 flex justify-end`}>
-                            {visible && <EditScheduleModal appear visible onDismissed={() => setVisible(false)}/>}
+                            <EditScheduleModal visible={visible} onModalDismissed={() => setVisible(false)}/>
                             <Button type={'button'} onClick={() => setVisible(true)}>
                                 Create schedule
                             </Button>

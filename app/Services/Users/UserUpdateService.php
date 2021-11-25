@@ -5,7 +5,6 @@ namespace Pterodactyl\Services\Users;
 use Pterodactyl\Models\User;
 use Illuminate\Contracts\Hashing\Hasher;
 use Pterodactyl\Traits\Services\HasUserLevels;
-use Pterodactyl\Repositories\Eloquent\UserRepository;
 
 class UserUpdateService
 {
@@ -17,43 +16,28 @@ class UserUpdateService
     private $hasher;
 
     /**
-     * @var \Pterodactyl\Repositories\Eloquent\UserRepository
-     */
-    private $repository;
-
-    /**
      * UpdateService constructor.
-     *
-     * @param \Illuminate\Contracts\Hashing\Hasher $hasher
-     * @param \Pterodactyl\Repositories\Eloquent\UserRepository $repository
      */
-    public function __construct(Hasher $hasher, UserRepository $repository)
+    public function __construct(Hasher $hasher)
     {
         $this->hasher = $hasher;
-        $this->repository = $repository;
     }
 
     /**
-     * Update the user model instance.
+     * Update the user model instance and return the updated model.
      *
-     * @param \Pterodactyl\Models\User $user
-     * @param array $data
-     * @return \Pterodactyl\Models\User
-     *
-     * @throws \Pterodactyl\Exceptions\Model\DataValidationException
-     * @throws \Pterodactyl\Exceptions\Repository\RecordNotFoundException
+     * @throws \Throwable
      */
-    public function handle(User $user, array $data)
+    public function handle(User $user, array $data): User
     {
-        if (! empty(array_get($data, 'password'))) {
+        if (!empty(array_get($data, 'password'))) {
             $data['password'] = $this->hasher->make($data['password']);
         } else {
             unset($data['password']);
         }
 
-        /** @var \Pterodactyl\Models\User $response */
-        $response = $this->repository->update($user->id, $data);
+        $user->forceFill($data)->saveOrFail();
 
-        return $response;
+        return $user->refresh();
     }
 }

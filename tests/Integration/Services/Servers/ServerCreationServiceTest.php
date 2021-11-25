@@ -4,16 +4,16 @@ namespace Pterodactyl\Tests\Integration\Services\Servers;
 
 use Mockery;
 use Pterodactyl\Models\Egg;
+use GuzzleHttp\Psr7\Request;
 use Pterodactyl\Models\Node;
 use Pterodactyl\Models\User;
-use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response;
 use Pterodactyl\Models\Server;
 use Pterodactyl\Models\Location;
 use Pterodactyl\Models\Allocation;
 use Illuminate\Foundation\Testing\WithFaker;
-use Illuminate\Validation\ValidationException;
 use GuzzleHttp\Exception\BadResponseException;
+use Illuminate\Validation\ValidationException;
 use Pterodactyl\Models\Objects\DeploymentObject;
 use Pterodactyl\Tests\Integration\IntegrationTestCase;
 use Pterodactyl\Services\Servers\ServerCreationService;
@@ -48,15 +48,18 @@ class ServerCreationServiceTest extends IntegrationTestCase
     public function testServerIsCreatedWithDeploymentObject()
     {
         /** @var \Pterodactyl\Models\User $user */
-        $user = factory(User::class)->create();
+        $user = User::factory()->create();
+
+        /** @var \Pterodactyl\Models\Location $location */
+        $location = Location::factory()->create();
 
         /** @var \Pterodactyl\Models\Node $node */
-        $node = factory(Node::class)->create([
-            'location_id' => factory(Location::class)->create()->id,
+        $node = Node::factory()->create([
+            'location_id' => $location->id,
         ]);
 
         /** @var \Pterodactyl\Models\Allocation[]|\Illuminate\Database\Eloquent\Collection $allocations */
-        $allocations = factory(Allocation::class)->times(5)->create([
+        $allocations = Allocation::factory()->times(5)->create([
             'node_id' => $node->id,
         ]);
 
@@ -64,7 +67,6 @@ class ServerCreationServiceTest extends IntegrationTestCase
             $allocations[0]->port,
         ]);
 
-        /** @noinspection PhpParamsInspection */
         $egg = $this->cloneEggAndVariables(Egg::query()->findOrFail(1));
         // We want to make sure that the validator service runs as an admin, and not as a regular
         // user when saving variables.
@@ -91,19 +93,10 @@ class ServerCreationServiceTest extends IntegrationTestCase
                 'BUNGEE_VERSION' => '123',
                 'SERVER_JARFILE' => 'server2.jar',
             ],
+            'start_on_completion' => true,
         ];
 
-        $this->daemonServerRepository->expects('setServer')->andReturnSelf();
-        $this->daemonServerRepository->expects('create')->with(Mockery::on(function ($value) {
-            $this->assertIsArray($value);
-            // Just check for some keys to make sure we're getting the expected configuration
-            // structure back. Other tests exist to confirm it is the correct structure.
-            $this->assertArrayHasKey('uuid', $value);
-            $this->assertArrayHasKey('environment', $value);
-            $this->assertArrayHasKey('invocation', $value);
-
-            return true;
-        }))->andReturnUndefined();
+        $this->daemonServerRepository->expects('setServer->create')->with(true)->andReturnUndefined();
 
         try {
             $this->getService()->handle(array_merge($data, [
@@ -112,7 +105,8 @@ class ServerCreationServiceTest extends IntegrationTestCase
                     'SERVER_JARFILE' => 'server2.jar',
                 ],
             ]), $deployment);
-            $this->assertTrue(false, 'This statement should not be reached.');
+
+            $this->fail('This execution pathway should not be reached.');
         } catch (ValidationException $exception) {
             $this->assertCount(1, $exception->errors());
             $this->assertArrayHasKey('environment.BUNGEE_VERSION', $exception->errors());
@@ -130,11 +124,11 @@ class ServerCreationServiceTest extends IntegrationTestCase
         $this->assertSame('server2.jar', $response->variables[1]->server_value);
 
         foreach ($data as $key => $value) {
-            if (in_array($key, ['allocation_additional', 'environment'])) {
+            if (in_array($key, ['allocation_additional', 'environment', 'start_on_completion'])) {
                 continue;
             }
 
-            $this->assertSame($value, $response->{$key});
+            $this->assertSame($value, $response->{$key}, "Failed asserting equality of '$key' in server response. Got: [{$response->{$key}}] Expected: [$value]");
         }
 
         $this->assertCount(2, $response->allocations);
@@ -142,7 +136,7 @@ class ServerCreationServiceTest extends IntegrationTestCase
         $this->assertSame($allocations[0]->id, $response->allocations[0]->id);
         $this->assertSame($allocations[4]->id, $response->allocations[1]->id);
 
-        $this->assertFalse($response->suspended);
+        $this->assertFalse($response->isSuspended());
         $this->assertTrue($response->oom_disabled);
         $this->assertSame(0, $response->database_limit);
         $this->assertSame(0, $response->allocation_limit);
@@ -156,15 +150,18 @@ class ServerCreationServiceTest extends IntegrationTestCase
     public function testErrorEncounteredByWingsCausesServerToBeDeleted()
     {
         /** @var \Pterodactyl\Models\User $user */
-        $user = factory(User::class)->create();
+        $user = User::factory()->create();
+
+        /** @var \Pterodactyl\Models\Location $location */
+        $location = Location::factory()->create();
 
         /** @var \Pterodactyl\Models\Node $node */
-        $node = factory(Node::class)->create([
-            'location_id' => factory(Location::class)->create()->id,
+        $node = Node::factory()->create([
+            'location_id' => $location->id,
         ]);
 
         /** @var \Pterodactyl\Models\Allocation $allocation */
-        $allocation = factory(Allocation::class)->create([
+        $allocation = Allocation::factory()->create([
             'node_id' => $node->id,
         ]);
 

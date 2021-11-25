@@ -26,7 +26,7 @@ class EggControllerTest extends ApplicationApiIntegrationTestCase
     }
 
     /**
-     * Test that all of the eggs belonging to a given nest can be returned.
+     * Test that all the eggs belonging to a given nest can be returned.
      */
     public function testListAllEggsInNest()
     {
@@ -45,9 +45,9 @@ class EggControllerTest extends ApplicationApiIntegrationTestCase
                         'script' => ['privileged', 'install', 'entry', 'container', 'extends'],
                         'config' => [
                             'files' => [],
-                            'startup' => ['done', 'userInteraction' => []],
+                            'startup' => ['done'],
                             'stop',
-                            'logs' => ['custom', 'location'],
+                            'logs' => [],
                             'extends',
                         ],
                     ],
@@ -61,7 +61,9 @@ class EggControllerTest extends ApplicationApiIntegrationTestCase
             $expected = json_encode(Arr::sortRecursive($datum['attributes']));
             $actual = json_encode(Arr::sortRecursive($this->getTransformer(EggTransformer::class)->transform($egg)));
 
-            $this->assertSame($expected, $actual,
+            $this->assertSame(
+                $expected,
+                $actual,
                 'Unable to find JSON fragment: ' . PHP_EOL . PHP_EOL . "[{$expected}]" . PHP_EOL . PHP_EOL . 'within' . PHP_EOL . PHP_EOL . "[{$actual}]."
             );
         }

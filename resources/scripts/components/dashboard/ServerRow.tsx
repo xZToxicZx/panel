@@ -41,7 +41,7 @@ const StatusIndicatorBox = styled(GreyRowBox)<{ $status: ServerPowerState | unde
 
 export default ({ server, className }: { server: Server; className?: string }) => {
     const interval = useRef<number>(null);
-    const [ isSuspended, setIsSuspended ] = useState(server.isSuspended);
+    const [ isSuspended, setIsSuspended ] = useState(server.status === 'suspended');
     const [ stats, setStats ] = useState<ServerStats | null>(null);
 
     const getStats = () => getServerResourceUsage(server.uuid)
@@ -49,8 +49,8 @@ export default ({ server, className }: { server: Server; className?: string }) =
         .catch(error => console.error(error));
 
     useEffect(() => {
-        setIsSuspended(stats?.isSuspended || server.isSuspended);
-    }, [ stats?.isSuspended, server.isSuspended ]);
+        setIsSuspended(stats?.isSuspended || server.status === 'suspended');
+    }, [ stats?.isSuspended, server.status ]);
 
     useEffect(() => {
         // Don't waste a HTTP request if there is nothing important to show to the user because
@@ -59,7 +59,7 @@ export default ({ server, className }: { server: Server; className?: string }) =
 
         getStats().then(() => {
             // @ts-ignore
-            interval.current = setInterval(() => getStats(), 20000);
+            interval.current = setInterval(() => getStats(), 30000);
         });
 
         return () => {
@@ -76,6 +76,7 @@ export default ({ server, className }: { server: Server; className?: string }) =
 
     const diskLimit = server.limits.disk !== 0 ? megabytesToHuman(server.limits.disk) : 'Unlimited';
     const memoryLimit = server.limits.memory !== 0 ? megabytesToHuman(server.limits.memory) : 'Unlimited';
+    const cpuLimit = server.limits.cpu !== 0 ? server.limits.cpu + ' %' : 'Unlimited';
 
     return (
         <StatusIndicatorBox as={Link} to={`/server/${server.id}`} className={className} $status={stats?.status}>
@@ -107,32 +108,37 @@ export default ({ server, className }: { server: Server; className?: string }) =
                     isSuspended ?
                         <div css={tw`flex-1 text-center`}>
                             <span css={tw`bg-red-500 rounded px-2 py-1 text-red-100 text-xs`}>
-                                {server.isSuspended ? 'Suspended' : 'Connection Error'}
+                                {server.status === 'suspended' ? 'Suspended' : 'Connection Error'}
                             </span>
                         </div>
                         :
-                        server.isInstalling ?
+                        (server.isTransferring || server.status) ?
                             <div css={tw`flex-1 text-center`}>
                                 <span css={tw`bg-neutral-500 rounded px-2 py-1 text-neutral-100 text-xs`}>
-                                    Installing
+                                    {server.isTransferring ?
+                                        'Transferring'
+                                        :
+                                        server.status === 'installing' ? 'Installing' : (
+                                            server.status === 'restoring_backup' ?
+                                                'Restoring Backup'
+                                                :
+                                                'Unavailable'
+                                        )
+                                    }
                                 </span>
                             </div>
                             :
-                            server.isTransferring ?
-                                <div css={tw`flex-1 text-center`}>
-                                    <span css={tw`bg-neutral-500 rounded px-2 py-1 text-neutral-100 text-xs`}>
-                                        Transferring
-                                    </span>
-                                </div>
-                                :
-                                <Spinner size={'small'}/>
+                            <Spinner size={'small'}/>
                     :
                     <React.Fragment>
-                        <div css={tw`flex-1 flex md:ml-4 sm:flex hidden justify-center`}>
-                            <Icon icon={faMicrochip} $alarm={alarms.cpu}/>
-                            <IconDescription $alarm={alarms.cpu}>
-                                {stats.cpuUsagePercent} %
-                            </IconDescription>
+                        <div css={tw`flex-1 ml-4 sm:block hidden`}>
+                            <div css={tw`flex justify-center`}>
+                                <Icon icon={faMicrochip} $alarm={alarms.cpu}/>
+                                <IconDescription $alarm={alarms.cpu}>
+                                    {stats.cpuUsagePercent.toFixed(2)} %
+                                </IconDescription>
+                            </div>
+                            <p css={tw`text-xs text-neutral-600 text-center mt-1`}>of {cpuLimit}</p>
                         </div>
                         <div css={tw`flex-1 ml-4 sm:block hidden`}>
                             <div css={tw`flex justify-center`}>

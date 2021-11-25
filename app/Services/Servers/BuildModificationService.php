@@ -5,10 +5,12 @@ namespace Pterodactyl\Services\Servers;
 use Illuminate\Support\Arr;
 use Pterodactyl\Models\Server;
 use Pterodactyl\Models\Allocation;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Database\ConnectionInterface;
 use Pterodactyl\Exceptions\DisplayException;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Pterodactyl\Repositories\Wings\DaemonServerRepository;
+use Pterodactyl\Exceptions\Http\Connection\DaemonConnectionException;
 
 class BuildModificationService
 {
@@ -47,8 +49,6 @@ class BuildModificationService
     /**
      * Change the build details for a specified server.
      *
-     * @param \Pterodactyl\Models\Server $server
-     * @param array $data
      * @return \Pterodactyl\Models\Server
      *
      * @throws \Throwable
@@ -56,48 +56,50 @@ class BuildModificationService
      */
     public function handle(Server $server, array $data)
     {
-        $this->connection->beginTransaction();
+        /** @var \Pterodactyl\Models\Server $server */
+        $server = $this->connection->transaction(function() use ($server, $data) {
+            $this->processAllocations($server, $data);
 
-        $this->processAllocations($server, $data);
-
-        if (isset($data['allocation_id']) && $data['allocation_id'] != $server->allocation_id) {
-            try {
-                Allocation::query()->where('id', $data['allocation_id'])->where('server_id', $server->id)->firstOrFail();
-            } catch (ModelNotFoundException $ex) {
-                throw new DisplayException('The requested default allocation is not currently assigned to this server.');
+            if (isset($data['allocation_id']) && $data['allocation_id'] != $server->allocation_id) {
+                try {
+                    Allocation::query()->where('id', $data['allocation_id'])->where('server_id', $server->id)->firstOrFail();
+                } catch (ModelNotFoundException $ex) {
+                    throw new DisplayException('The requested default allocation is not currently assigned to this server.');
+                }
             }
-        }
 
-        // If any of these values are passed through in the data array go ahead and set
-        // them correctly on the server model.
-        $merge = Arr::only($data, ['oom_disabled', 'memory', 'swap', 'io', 'cpu', 'threads', 'disk', 'allocation_id']);
+            // If any of these values are passed through in the data array go ahead and set
+            // them correctly on the server model.
+            $merge = Arr::only($data, ['oom_disabled', 'memory', 'swap', 'io', 'cpu', 'threads', 'disk', 'allocation_id']);
 
-        $server->forceFill(array_merge($merge, [
-            'database_limit' => Arr::get($data, 'database_limit', 0) ?? null,
-            'allocation_limit' => Arr::get($data, 'allocation_limit', 0) ?? null,
-            'backup_limit' => Arr::get($data, 'backup_limit', 0) ?? 0,
-        ]))->saveOrFail();
+            $server->forceFill(array_merge($merge, [
+                'database_limit' => Arr::get($data, 'database_limit', 0) ?? null,
+                'allocation_limit' => Arr::get($data, 'allocation_limit', 0) ?? null,
+                'backup_limit' => Arr::get($data, 'backup_limit', 0) ?? 0,
+            ]))->saveOrFail();
 
-        $server = $server->fresh();
+            return $server->refresh();
+        });
 
         $updateData = $this->structureService->handle($server);
 
+        // Because Wings always fetches an updated configuration from the Panel when booting
+        // a server this type of exception can be safely "ignored" and just written to the logs.
+        // Ideally this request succeeds, so we can apply resource modifications on the fly, but
+        // if it fails we can just continue on as normal.
         if (!empty($updateData['build'])) {
-            $this->daemonServerRepository->setServer($server)->update([
-                'build' => $updateData['build'],
-            ]);
+            try {
+                $this->daemonServerRepository->setServer($server)->sync();
+            } catch (DaemonConnectionException $exception) {
+                Log::warning($exception, ['server_id' => $server->id]);
+            }
         }
-
-        $this->connection->commit();
 
         return $server;
     }
 
     /**
      * Process the allocations being assigned in the data and ensure they are available for a server.
-     *
-     * @param \Pterodactyl\Models\Server $server
-     * @param array $data
      *
      * @throws \Pterodactyl\Exceptions\DisplayException
      */
@@ -109,7 +111,7 @@ class BuildModificationService
 
         // Handle the addition of allocations to this server. Only assign allocations that are not currently
         // assigned to a different server, and only allocations on the same node as the server.
-        if (! empty($data['add_allocations'])) {
+        if (!empty($data['add_allocations'])) {
             $query = Allocation::query()
                 ->where('node_id', $server->node_id)
                 ->whereIn('id', $data['add_allocations'])
@@ -122,16 +124,14 @@ class BuildModificationService
             $query->update(['server_id' => $server->id, 'notes' => null]);
         }
 
-        if (! empty($data['remove_allocations'])) {
+        if (!empty($data['remove_allocations'])) {
             foreach ($data['remove_allocations'] as $allocation) {
                 // If we are attempting to remove the default allocation for the server, see if we can reassign
                 // to the first provided value in add_allocations. If there is no new first allocation then we
                 // will throw an exception back.
                 if ($allocation === ($data['allocation_id'] ?? $server->allocation_id)) {
                     if (empty($freshlyAllocated)) {
-                        throw new DisplayException(
-                            'You are attempting to delete the default allocation for this server but there is no fallback allocation to use.'
-                        );
+                        throw new DisplayException('You are attempting to delete the default allocation for this server but there is no fallback allocation to use.');
                     }
 
                     // Update the default allocation to be the first allocation that we are creating.

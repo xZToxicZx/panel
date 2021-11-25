@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { useHistory, useLocation, useParams } from 'react-router-dom';
-import { Schedule } from '@/api/server/schedules/getServerSchedules';
+import { useHistory, useParams } from 'react-router-dom';
 import getServerSchedule from '@/api/server/schedules/getServerSchedule';
 import Spinner from '@/components/elements/Spinner';
 import FlashMessageRender from '@/components/FlashMessageRender';
@@ -23,14 +22,10 @@ interface Params {
     id: string;
 }
 
-interface State {
-    schedule?: Schedule;
-}
-
 const CronBox = ({ title, value }: { title: string; value: string }) => (
-    <div css={tw`bg-neutral-700 rounded p-4`}>
+    <div css={tw`bg-neutral-700 rounded p-3`}>
         <p css={tw`text-neutral-300 text-sm`}>{title}</p>
-        <p css={tw`text-2xl font-medium text-neutral-100`}>{value}</p>
+        <p css={tw`text-xl font-medium text-neutral-100`}>{value}</p>
     </div>
 );
 
@@ -46,9 +41,8 @@ const ActivePill = ({ active }: { active: boolean }) => (
 );
 
 export default () => {
-    const params = useParams() as Params;
     const history = useHistory();
-    const state: State = useLocation().state;
+    const { id: scheduleId } = useParams<Params>();
 
     const id = ServerContext.useStoreState(state => state.server.data!.id);
     const uuid = ServerContext.useStoreState(state => state.server.data!.uuid);
@@ -57,44 +51,37 @@ export default () => {
     const [ isLoading, setIsLoading ] = useState(true);
     const [ showEditModal, setShowEditModal ] = useState(false);
 
-    const schedule = ServerContext.useStoreState(st => st.schedules.data.find(s => s.id === state.schedule?.id), isEqual);
+    const schedule = ServerContext.useStoreState(st => st.schedules.data.find(s => s.id === Number(scheduleId)), isEqual);
     const appendSchedule = ServerContext.useStoreActions(actions => actions.schedules.appendSchedule);
 
     useEffect(() => {
-        if (schedule?.id === Number(params.id)) {
+        if (schedule?.id === Number(scheduleId)) {
             setIsLoading(false);
             return;
         }
 
         clearFlashes('schedules');
-        getServerSchedule(uuid, Number(params.id))
+        getServerSchedule(uuid, Number(scheduleId))
             .then(schedule => appendSchedule(schedule))
             .catch(error => {
                 console.error(error);
                 clearAndAddHttpError({ error, key: 'schedules' });
             })
             .then(() => setIsLoading(false));
-    }, [ params ]);
+    }, [ scheduleId ]);
 
     const toggleEditModal = useCallback(() => {
         setShowEditModal(s => !s);
     }, []);
 
     return (
-        <PageContentBlock>
+        <PageContentBlock title={'Schedules'}>
             <FlashMessageRender byKey={'schedules'} css={tw`mb-4`}/>
             {!schedule || isLoading ?
                 <Spinner size={'large'} centered/>
                 :
                 <>
                     <ScheduleCronRow cron={schedule.cron} css={tw`sm:hidden bg-neutral-700 rounded mb-4 p-3`}/>
-                    <div css={tw`hidden sm:grid grid-cols-5 md:grid-cols-7 gap-4 mb-6`}>
-                        <CronBox title={'Minute'} value={schedule.cron.minute}/>
-                        <CronBox title={'Hour'} value={schedule.cron.hour}/>
-                        <CronBox title={'Day (Month)'} value={schedule.cron.dayOfMonth}/>
-                        <CronBox title={'Month'} value={'*'}/>
-                        <CronBox title={'Day (Week)'} value={schedule.cron.dayOfWeek}/>
-                    </div>
                     <div css={tw`rounded shadow`}>
                         <div css={tw`sm:flex items-center bg-neutral-900 p-3 sm:p-6 border-b-4 border-neutral-600 rounded-t`}>
                             <div css={tw`flex-1`}>
@@ -143,6 +130,13 @@ export default () => {
                                 </Can>
                             </div>
                         </div>
+                        <div css={tw`hidden sm:grid grid-cols-5 md:grid-cols-5 gap-4 mb-4 mt-4`}>
+                            <CronBox title={'Minute'} value={schedule.cron.minute}/>
+                            <CronBox title={'Hour'} value={schedule.cron.hour}/>
+                            <CronBox title={'Day (Month)'} value={schedule.cron.dayOfMonth}/>
+                            <CronBox title={'Month'} value={schedule.cron.month}/>
+                            <CronBox title={'Day (Week)'} value={schedule.cron.dayOfWeek}/>
+                        </div>
                         <div css={tw`bg-neutral-700 rounded-b`}>
                             {schedule.tasks.length > 0 ?
                                 schedule.tasks.map(task => (
@@ -153,7 +147,7 @@ export default () => {
                             }
                         </div>
                     </div>
-                    <EditScheduleModal visible={showEditModal} schedule={schedule} onDismissed={toggleEditModal}/>
+                    <EditScheduleModal visible={showEditModal} schedule={schedule} onModalDismissed={toggleEditModal}/>
                     <div css={tw`mt-6 flex sm:justify-end`}>
                         <Can action={'schedule.delete'}>
                             <DeleteScheduleButton
@@ -161,7 +155,7 @@ export default () => {
                                 onDeleted={() => history.push(`/server/${id}/schedules`)}
                             />
                         </Can>
-                        {schedule.isActive && schedule.tasks.length > 0 &&
+                        {schedule.tasks.length > 0 &&
                         <Can action={'schedule.update'}>
                             <RunScheduleButton schedule={schedule}/>
                         </Can>
